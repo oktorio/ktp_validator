@@ -6,7 +6,7 @@
 #          - Explicit final-stage penalty for unclear text (fair/poor)
 #          - Outputs separate multipliers (doc vs text) and combined reason
 
-__version__ = "1.3"
+__version__ = "1.4"
 
 import os, sys, argparse, json
 import numpy as np
@@ -62,8 +62,8 @@ TEXT_COVERAGE_PENALTY_W= 12.0
 # ---- Final-score multipliers (easy knobs) ----
 DOC_MULTIPLIERS = {
     "color_document": 1.40,  # boosted to give more weight to KTP warna
-    "grayscale_document": 0.85,
-    "photocopy_on_colored_background": 0.70,
+    "grayscale_document": 0.30,
+    "photocopy_on_colored_background": 0.30,
     "black": 0.00,
     "white": 0.00,
 }
@@ -437,6 +437,14 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
             score = min(100.0, max(score, HEURISTIC_MIN_SCORE - 5))
             score = min(100.0, score + HEURISTIC_BONUS * 0.5)
 
+    
+    # Heuristic floor for structurally readable KTPs
+    try:
+        STRUCT_FLOOR_SCORE
+    except NameError:
+        STRUCT_FLOOR_SCORE = 60.0  # target floor when structure OK
+    if score < STRUCT_FLOOR_SCORE and (edges >= 0.20 and coverage >= 0.28 and mser_density >= 3000):
+        score = max(score, STRUCT_FLOOR_SCORE)
     score=float(np.clip(score,0,100))
     label="excellent" if score>=85 else "good" if score>=70 else "fair" if score>=55 else "poor"
 
