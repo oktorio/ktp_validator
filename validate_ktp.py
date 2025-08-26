@@ -6,7 +6,7 @@
 #          - Explicit final-stage penalty for unclear text (fair/poor)
 #          - Outputs separate multipliers (doc vs text) and combined reason
 
-__version__ = "1.0"
+__version__ = "1.3"
 
 import os, sys, argparse, json
 import numpy as np
@@ -35,8 +35,8 @@ ASPECT_MIN, ASPECT_MAX = 1.2, 2.2
 INSET_FRACTION         = 0.08
 
 # Legibility score weights (OCR weighted more for real KTPs)
-W_SHARP, W_EDGE, W_CONTR, W_OCR = 0.35, 0.20, 0.15, 0.30
-SHARP_LO_HI  = (80, 600)
+W_SHARP, W_EDGE, W_CONTR, W_OCR = 0.32, 0.26, 0.22, 0.20
+SHARP_LO_HI  = (40, 360)
 EDGE_LO_HI   = (0.02, 0.09)
 CONTR_LO_HI  = (0.05, 0.22)
 
@@ -46,22 +46,22 @@ CENSOR_UNIFORM_STD_THR = 8.0
 CENSOR_PENALTY_W       = 45.0
 
 PIXEL_GRID_SIZES       = [8, 12, 16, 20, 24]
-BLOCKINESS_PENALTY_W   = 8.0   # lighter for patterned cards
+BLOCKINESS_PENALTY_W   = 6.0   # lighter for patterned cards
 
 MSER_MIN_COUNT_PER_MP  = 160.0
 MSER_PENALTY_W         = 25.0
 MSER_MAX_COUNT_PER_MP  = 12000.0
-MSER_OVER_PENALTY_W    = 10.0
+MSER_OVER_PENALTY_W    = 6.0
 
-OCR_LOW_CONF_THR       = 40.0
-OCR_LOW_CONF_PENALTY_W = 20.0
+OCR_LOW_CONF_THR       = 30.0
+OCR_LOW_CONF_PENALTY_W = 12.0
 
 TEXT_COVERAGE_RANGE    = (0.01, 0.20)
 TEXT_COVERAGE_PENALTY_W= 12.0
 
 # ---- Final-score multipliers (easy knobs) ----
 DOC_MULTIPLIERS = {
-    "color_document": 1.15,  # boosted to give more weight to KTP warna
+    "color_document": 1.40,  # boosted to give more weight to KTP warna
     "grayscale_document": 0.85,
     "photocopy_on_colored_background": 0.70,
     "black": 0.00,
@@ -338,7 +338,9 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     M = cv2.getPerspectiveTransform(q,np.array([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],np.float32))
     top = cv2.warpPerspective(bgr,M,(W,H),flags=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(top,cv2.COLOR_BGR2GRAY)
-    text_roi = gray[:,:int(W*0.72)]
+    EXCLUDE_HEADER_FRAC = 0.15
+    y0 = int(H*EXCLUDE_HEADER_FRAC)
+    text_roi = gray[y0:,:int(W*0.78)]
     text_roi = cv2.fastNlMeansDenoising(text_roi,None,7,7,21)
     text_norm = cv2.equalizeHist(text_roi)
     text_mask = _text_stroke_mask(text_norm)
@@ -379,6 +381,13 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     sharp = _variance_of_laplacian(text_norm) * (value_frac + 1e-6)
     contr = float(np.std(text_norm[score_mask>0].astype(np.float32)/255.0)) if np.any(score_mask>0) else 0.0
     ocr_c = _ocr_confidence(text_norm)
+    # If OCR confidence is very low, ignore OCR entirely (treat as None)
+    try:
+        OCR_IGNORE_BELOW
+    except NameError:
+        OCR_IGNORE_BELOW = 30.0
+    if ocr_c is not None and ocr_c < OCR_IGNORE_BELOW:
+        ocr_c = None
     coverage = _text_coverage(text_norm)
 
     s_sharp=_norm_0_100(sharp,*SHARP_LO_HI)
@@ -392,6 +401,17 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     censor_frac=_find_censor_fraction(text_norm)
     blockiness=_blockiness_score(text_norm)
     mser_density=_mser_text_density(text_norm)
+
+    # Heuristic lift: if multiple cues indicate readable fields (even with low sharpness)
+    try:
+        HEURISTIC_MIN_SCORE
+    except NameError:
+        HEURISTIC_MIN_SCORE = 60.0
+    try:
+        HEURISTIC_BONUS
+    except NameError:
+        HEURISTIC_BONUS = 10.0
+
 
     if mser_density<MSER_MIN_COUNT_PER_MP:
         miss_ratio=np.clip((MSER_MIN_COUNT_PER_MP-mser_density)/MSER_MIN_COUNT_PER_MP,0,1)
@@ -408,6 +428,14 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     if coverage<cov_lo:
         miss=(cov_lo-coverage)/max(cov_lo,1e-6)
         score-=np.clip(miss,0,1)*TEXT_COVERAGE_PENALTY_W
+
+    
+    # Apply lift if edges/contrast/coverage/MSER are in healthy ranges
+    if score < HEURISTIC_MIN_SCORE:
+        
+        if (edges >= 0.20 and contr >= 0.16 and 0.18 <= coverage <= 0.42 and 800 <= mser_density <= 9000):
+            score = min(100.0, max(score, HEURISTIC_MIN_SCORE - 5))
+            score = min(100.0, score + HEURISTIC_BONUS * 0.5)
 
     score=float(np.clip(score,0,100))
     label="excellent" if score>=85 else "good" if score>=70 else "fair" if score>=55 else "poor"
