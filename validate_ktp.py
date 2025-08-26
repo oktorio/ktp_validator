@@ -6,7 +6,7 @@
 #          - Explicit final-stage penalty for unclear text (fair/poor)
 #          - Outputs separate multipliers (doc vs text) and combined reason
 
-__version__ = "1.5"
+__version__ = "1.6"
 
 import os, sys, argparse, json
 import numpy as np
@@ -62,8 +62,8 @@ TEXT_COVERAGE_PENALTY_W= 12.0
 # ---- Final-score multipliers (easy knobs) ----
 DOC_MULTIPLIERS = {
     "color_document": 1.40,  # boosted to give more weight to KTP warna
-    "grayscale_document": 0.85,
-    "photocopy_on_colored_background": 0.70,
+    "grayscale_document": 0.30,
+    "photocopy_on_colored_background": 0.30,
     "black": 0.00,
     "white": 0.00,
 }
@@ -399,6 +399,25 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
 
     grid_e = _grid_energy(val)
 
+    # Block-variance uniformity (pixelation) detector
+    try:
+        BLOCK_VAR_B
+    except NameError:
+        BLOCK_VAR_B = 12
+    try:
+        BLOCK_VAR_STD_THR
+    except NameError:
+        BLOCK_VAR_STD_THR = 15.0
+    H, W = val.shape[:2]
+    bvar = []
+    B = int(BLOCK_VAR_B)
+    for yy in range(0, H - B, B):
+        for xx in range(0, W - B, B):
+            patch = val[yy:yy+B, xx:xx+B]
+            bvar.append(float(patch.var()))
+    block_var_std = float(np.std(bvar)) if bvar else 0.0
+
+
     # Intersection: use only text strokes that are also on the value side
     score_mask = cv2.bitwise_and(text_mask, value_mask)
     text_frac  = float(text_mask.mean()/255.0)
@@ -463,6 +482,20 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     except NameError:
         GRID_E_MIN = 0.12
     score -= np.clip(mosaic_frac*3.0, 0, 1) * MOSAIC_PENALTY_W
+    # Option A: High-contrast but OCR missing -> suspicious redaction/pixelation
+    if ocr_c is None and contr > 0.18 and mser_density < 5000:
+        score -= 20.0
+
+    # Option B: Block-variance uniformity (strong sign of mosaic)
+    try:
+        BLOCK_VARIANCE_PENALTY_W
+    except NameError:
+        BLOCK_VARIANCE_PENALTY_W = 22.0
+    if block_var_std < BLOCK_VAR_STD_THR:
+        # Scale penalty by how far under threshold it is
+        deficit = (BLOCK_VAR_STD_THR - block_var_std) / max(BLOCK_VAR_STD_THR, 1e-6)
+        score -= float(np.clip(deficit, 0, 1)) * BLOCK_VARIANCE_PENALTY_W
+
     if grid_e > GRID_E_MIN and mosaic_frac > 0.08:
         score -= (grid_e - GRID_E_MIN) * 60.0
 
