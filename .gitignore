@@ -7,5 +7,5 @@ uploads/
 *.log
 .vscode/
 .idea/
-sample_ktp
-debug
+sample_ktp/
+debug/
