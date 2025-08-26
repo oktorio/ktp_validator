@@ -2,7 +2,7 @@
 
 KTP photocopy/color detection **and** text-legibility scoring with a single **Final Score (0–100)**. Optimised for Indonesian ID cards (KTP) captured by mobile or scanner.
 
-**File:** `ktp_validator_v1_0.py`
+**File:** `ktp_validator.py`
 **Python:** 3.10+
 **OS:** Windows / macOS / Linux
 
