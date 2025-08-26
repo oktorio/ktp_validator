@@ -6,7 +6,7 @@
 #          - Explicit final-stage penalty for unclear text (fair/poor)
 #          - Outputs separate multipliers (doc vs text) and combined reason
 
-__version__ = "1.4"
+__version__ = "1.5"
 
 import os, sys, argparse, json
 import numpy as np
@@ -62,16 +62,16 @@ TEXT_COVERAGE_PENALTY_W= 12.0
 # ---- Final-score multipliers (easy knobs) ----
 DOC_MULTIPLIERS = {
     "color_document": 1.40,  # boosted to give more weight to KTP warna
-    "grayscale_document": 0.30,
-    "photocopy_on_colored_background": 0.30,
+    "grayscale_document": 0.85,
+    "photocopy_on_colored_background": 0.70,
     "black": 0.00,
     "white": 0.00,
 }
 LEGIBILITY_MULTIPLIERS = {
     "excellent": 1.00,
     "good": 1.00,
-    "fair": 0.85,
-    "poor": 0.70,
+    "fair": 0.90,
+    "poor": 0.80,
 }
 # =================================================
 
@@ -328,6 +328,22 @@ def _expand_value_mask(mask):
     kernel = np.ones((1, k), np.uint8)
     return cv2.dilate(mask, kernel, iterations=1)
 # ------------------------------------------------
+# ------------------------------------------------
+def _grid_energy(gray, B_list=(8,12,16,20,24)):
+    sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    sy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(sx, sy)
+    mag = mag / (mag.max() + 1e-6)
+    H, W = gray.shape[:2]
+    best = 0.0
+    for B in B_list:
+        if min(H, W) < 3*B: 
+            continue
+        v = mag[:, ::B].mean()
+        h = mag[::B, :].mean()
+        best = max(best, 0.5*(v+h))
+    return float(best)
+
 
 def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     q = _order_quad(doc_poly)
@@ -369,6 +385,19 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
 
     if value_frac_tmp < 0.08:
         value_mask = np.ones_like(text_mask, dtype=np.uint8) * 255
+
+
+    # --- Mosaic/blur penalty on value side (detect low local entropy and block grid) ---
+    val = text_norm.copy()
+    vm = (value_mask > 0)
+    k = max(5, int(0.02*val.shape[1]))
+    blur = cv2.blur(val.astype(np.float32), (k, k))
+    sq = cv2.blur((val.astype(np.float32))**2, (k, k))
+    std_map = np.sqrt(np.maximum(0, sq - blur**2))
+    low_entropy = (std_map < 6.0) & vm
+    mosaic_frac = float(low_entropy.mean())
+
+    grid_e = _grid_energy(val)
 
     # Intersection: use only text strokes that are also on the value side
     score_mask = cv2.bitwise_and(text_mask, value_mask)
@@ -422,6 +451,21 @@ def score_text_legibility(bgr, doc_poly, save_debug_dir=None, base_name=""):
     score-=np.clip(censor_frac,0,1)*CENSOR_PENALTY_W
     score-=np.clip(blockiness,0,1)*BLOCKINESS_PENALTY_W
     if ocr_c is not None and ocr_c<OCR_LOW_CONF_THR:
+        ocr_pen=(OCR_LOW_CONF_THR-ocr_c)/OCR_LOW_CONF_THR
+        score-=np.clip(ocr_pen,0,1)*OCR_LOW_CONF_PENALTY_W
+    # Mosaic penalty
+    try:
+        MOSAIC_PENALTY_W
+    except NameError:
+        MOSAIC_PENALTY_W = 18.0
+    try:
+        GRID_E_MIN
+    except NameError:
+        GRID_E_MIN = 0.12
+    score -= np.clip(mosaic_frac*3.0, 0, 1) * MOSAIC_PENALTY_W
+    if grid_e > GRID_E_MIN and mosaic_frac > 0.08:
+        score -= (grid_e - GRID_E_MIN) * 60.0
+
         ocr_pen=(OCR_LOW_CONF_THR-ocr_c)/OCR_LOW_CONF_THR
         score-=np.clip(ocr_pen,0,1)*OCR_LOW_CONF_PENALTY_W
     cov_lo,_=TEXT_COVERAGE_RANGE
@@ -493,7 +537,16 @@ def analyze_file(path, verbose=False, want_json=True, save_debug=None):
     leg_mult = LEGIBILITY_MULTIPLIERS.get(leg_label, 1.0)
     combined_mult = float(doc_mult * leg_mult)
 
-    final_score = float(np.clip(text["score"] * combined_mult, 0, 100))
+    
+    # Cap color/document-based bonus so color KTP doesn't inflate mediocre text too much
+    try:
+        FINAL_COLOR_BONUS_CAP
+    except NameError:
+        FINAL_COLOR_BONUS_CAP = 8.0  # max extra points from doc type
+    raw_mult_score = float(np.clip(text["score"] * combined_mult, 0, 100))
+    add_cap_score = float(min(text["score"] + FINAL_COLOR_BONUS_CAP, 100.0))
+    final_score = min(raw_mult_score, add_cap_score)
+
     final_label = ("excellent" if final_score>=85 else
                    "good" if final_score>=70 else
                    "fair" if final_score>=55 else "poor")
