@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+debug_out/
+uploads/
+*.log
+.vscode/
+.idea/
+sample_ktp
