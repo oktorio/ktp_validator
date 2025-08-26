@@ -253,7 +253,7 @@ Use these to visually audit why a score was high/low.
 
 ## 📄 License
 
-Add your chosen license here (e.g., MIT). If omitted, the repository is proprietary by default.
+MIT License
 
 ---
 
