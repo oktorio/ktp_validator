@@ -1,9 +1,10 @@
 # KTP Validator
 
-KTP photocopy/color detection **and** text-legibility scoring with a single **Final Score (0–100)**. Optimised for Indonesian ID cards (KTP) captured by mobile or scanner.
+KTP photocopy/color detection **and** text-legibility scoring with a single **Final Score (0–100)**.  
+Optimised for Indonesian ID cards (KTP) captured by mobile or scanner.
 
-**File:** `ktp_validator.py`
-**Python:** 3.10+
+**File:** `ktp_validator_v1_0.py`  
+**Python:** 3.10+  
 **OS:** Windows / macOS / Linux
 
 ---
@@ -12,7 +13,7 @@ KTP photocopy/color detection **and** text-legibility scoring with a single **Fi
 
 1. **Document type classification**
 
-   * `color_document` (KTP warna)
+   * `color_document` (KTP warna, given higher weight)
    * `grayscale_document`
    * `photocopy_on_colored_background`
    * Hard rejects: `black`, `white`
@@ -25,6 +26,7 @@ KTP photocopy/color detection **and** text-legibility scoring with a single **Fi
 3. **Final Score (0–100)**
 
    * Combines legibility score with **document-type multiplier** and **legibility multiplier**
+   * Penalises unclear text more strongly
    * Outputs `final.score`, `final.label`, and detailed reasons/multipliers
 
 ---
@@ -46,7 +48,7 @@ python ktp_validator_v1_0.py path/to/image.jpg --verbose --save-debug debug_out
 python ktp_validator_v1_0.py path/to/folder --verbose --save-debug debug_out
 ```
 
-> `--save-debug` stores rectified crops and masks (helpful for QA).
+> `--save-debug` stores rectified crops and masks (helpful for QA).  
 > `--verbose` shows extra console info in plain mode.
 
 ---
@@ -112,23 +114,23 @@ python ktp_validator_v1_0.py samples/ --save-debug debug_out
     "bg_meanS": 64.0
   },
   "text_legibility": {
-    "score": 68.3,
+    "score": 60.5,
     "label": "fair",
-    "sharpness_vlap": 30.1,
-    "edge_density": 0.366,
-    "rms_contrast": 0.214,
-    "ocr_conf": 14.5,
+    "sharpness_vlap": 122.3,
+    "edge_density": 0.1296,
+    "rms_contrast": 0.2277,
+    "ocr_conf": null,
     "warped_size": [800, 500],
-    "censor_area_frac": 0.000,
-    "blockiness": 0.316,
-    "mser_per_megapixel": 26215.3,
-    "text_coverage": 0.469,
-    "text_pixels_frac": 0.391,
-    "value_pixels_frac": 0.300
+    "censor_area_frac": 0.0,
+    "blockiness": 0.064,
+    "mser_per_megapixel": 4117.6,
+    "text_coverage": 0.309,
+    "text_pixels_frac": 0.263,
+    "value_pixels_frac": 0.263
   },
   "final": {
-    "score": 72.4,
-    "label": "good",
+    "score": 68.5,
+    "label": "fair",
     "multipliers": { "doc": 1.15, "text": 0.85, "combined": 0.978 },
     "reason": "color_document; text=fair"
   },
@@ -138,14 +140,14 @@ python ktp_validator_v1_0.py samples/ --save-debug debug_out
 
 **Label thresholds**
 
-* `excellent` ≥ 85
-* `good` ≥ 70
-* `fair` ≥ 55
+* `excellent` ≥ 85  
+* `good` ≥ 70  
+* `fair` ≥ 55  
 * otherwise `poor`
 
 ---
 
-## 🎛️ Tuning (high‑level knobs)
+## 🎛️ Tuning (high-level knobs)
 
 Open `ktp_validator_v1_0.py` and edit these dicts near the top.
 
@@ -161,21 +163,16 @@ DOC_MULTIPLIERS = {
 }
 ```
 
-* Increase `color_document` above 1.0 to favour KTP warna.
-* Decrease grayscale/photocopy to penalise them more.
-
 ### Legibility penalty (final-stage)
 
 ```python
 LEGIBILITY_MULTIPLIERS = {
     "excellent": 1.00,
     "good": 1.00,
-    "fair": 0.85,
+    "fair": 0.85,   # stricter on unclear text
     "poor": 0.70,
 }
 ```
-
-* Lower `fair`/`poor` to be stricter with unclear text.
 
 ---
 
@@ -190,21 +187,17 @@ All under the **Tunables** section:
   OCR_LOW_CONF_PENALTY_W = 20.0
   ```
 
-  Raise threshold or penalty weight to punish weak OCR more.
-
 * **Feature weights**
 
   ```python
   W_SHARP, W_EDGE, W_CONTR, W_OCR = 0.35, 0.20, 0.15, 0.30
   ```
 
-  Emphasise sharpness or OCR by increasing its weight.
-
 * **Penalty weights**
 
   ```python
-  MSER_PENALTY_W = 25.0      # too few detected text components
-  MSER_OVER_PENALTY_W = 10.0 # too many (noisy)
+  MSER_PENALTY_W = 25.0
+  MSER_OVER_PENALTY_W = 10.0
   BLOCKINESS_PENALTY_W = 8.0
   TEXT_COVERAGE_PENALTY_W = 12.0
   CENSOR_PENALTY_W = 45.0
@@ -218,35 +211,31 @@ All under the **Tunables** section:
   BG_MEAN_SAT_THR = 25
   ```
 
-  Adjust if your camera/scanner saturation profile differs.
-
 ---
 
 ## 🧰 Debug artifacts
 
 When `--save-debug DIR` is provided, the script writes:
 
-* `<name>_rectified.png` : perspective‑corrected card crop
+* `<name>_rectified.png` : perspective-corrected card crop
 * `<name>_textmask.png` : detected text strokes
-* `<name>_valuemask.png` : value‑side mask used for scoring
-
-Use these to visually audit why a score was high/low.
+* `<name>_valuemask.png` : value-side mask used for scoring
 
 ---
 
 ## 🛠️ Troubleshooting
 
 * **`Failed to read image`**: path/format issue. Ensure image is readable by OpenCV.
-* **OCR shows `null`**: Tesseract not installed or not on PATH. Install it or set `pytesseract.pytesseract.tesseract_cmd`.
-* **Everything scores very low**: images too small/blurred; ensure ≥1000px width and good lighting; avoid reflections.
-* **Detected as `black`/`white`**: the entire image is near solid colour; check capture pipeline and cropping.
+* **OCR shows `null`**: Tesseract not installed or not on PATH.
+* **Everything scores very low**: ensure ≥1000px width, good lighting, avoid reflections.
+* **Detected as `black`/`white`**: entire image is near solid colour; check capture pipeline.
 
 ---
 
 ## 🧭 Roadmap ideas
 
-* External `config.json` loader for tuning without code edits
-* Batch summary report (CSV/Excel)
+* External `config.json` loader for tuning without code edits  
+* Batch summary report (CSV/Excel)  
 * Face/photo region quality checks (glare, shadow)
 
 ---
@@ -259,7 +248,6 @@ MIT License
 
 ## 🙏 Acknowledgements
 
-* OpenCV for image processing
-* Tesseract OCR (optional) for text confidence
+* OpenCV for image processing  
+* Tesseract OCR (optional) for text confidence  
 
-> Feedback and PRs are welcome.
